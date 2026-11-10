@@ -2,7 +2,7 @@
 
 Serve a robot policy to the **Simoji** iPhone simulator. The phone runs the physics and streams
 observations (proprio + camera JPEGs); your GPU box runs the model and streams back action chunks.
-Protocol: [`docs/remote-policy-protocol.md`](../docs/remote-policy-protocol.md) (Simoji Remote Policy protocol v1).
+Protocol: `docs/remote-policy-protocol.md` (Simoji Remote Policy protocol v1).
 
 ## Quickstart (one command + scan the code)
 

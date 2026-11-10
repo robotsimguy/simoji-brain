@@ -198,6 +198,51 @@ async def test_repairs_when_session_is_gone(relay, echo_runner):
             await task
 
 
+async def test_new_code_before_an_unused_one_expires(relay, echo_runner):
+    pair_fn, paired = make_pairer(relay)
+
+    def short_lived():
+        p = pair_fn()
+        p.expires_in = 20.3  # re-paired 20 s before expiry -> after 0.3 s here
+        return p
+
+    client = RelayClient(echo_runner, relay=relay.url(), pair_fn=short_lived, min_backoff=0.05, max_backoff=0.1)
+    task = asyncio.create_task(client.run())
+    try:
+        for _ in range(100):
+            if len(paired) >= 2 and relay.sessions.get("sess2", {}).get("server") is not None:
+                break
+            await asyncio.sleep(0.05)
+        assert len(paired) >= 2 and paired[1].session == "sess2"
+    finally:
+        client.stop()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+async def test_used_code_is_kept(relay, echo_runner):
+    pair_fn, paired = make_pairer(relay)
+
+    def short_lived():
+        p = pair_fn()
+        p.expires_in = 20.3
+        return p
+
+    client = RelayClient(echo_runner, relay=relay.url(), pair_fn=short_lived, min_backoff=0.05, max_backoff=0.1)
+    task = asyncio.create_task(client.run())
+    try:
+        await asyncio.wait_for(client.connected.wait(), 5)
+        client._session.joined = True  # a phone joined (peer frame / hello): its code must stay
+        await asyncio.sleep(0.8)
+        assert len(paired) == 1
+    finally:
+        client.stop()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
 async def test_pairing_failure_is_retried(relay, echo_runner):
     calls = {"n": 0}
     pair_fn, _ = make_pairer(relay)

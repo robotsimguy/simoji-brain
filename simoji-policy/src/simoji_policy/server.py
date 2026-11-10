@@ -108,6 +108,7 @@ class Session:
         self._pending: Optional[Obs] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._instruction: Optional[str] = None
+        self.joined = False          # a phone has been here (peer connected or hello): its pairing code is used up
 
     async def send(self, msg: Dict[str, Any]) -> None:
         try:
@@ -135,11 +136,13 @@ class Session:
             return
         try:
             if kind == "hello":
+                self.joined = True
                 await self._on_hello(payload)
             elif kind == "obs":
                 await self._on_obs(payload)
             elif kind == "peer":
                 connected = bool(payload.get("connected"))
+                self.joined = self.joined or connected
                 log.info("[%s] peer %s", self.name, "connected" if connected else "disconnected")
                 if not connected:
                     self.ready = None
@@ -224,13 +227,16 @@ def _describe(e: BaseException) -> str:
 # --------------------------------------------------------------------------- #
 
 
-async def run_session_over_ws(ws, runner: PolicyRunner, name: str) -> Session:
+async def run_session_over_ws(ws, runner: PolicyRunner, name: str, session: Optional[Session] = None) -> Session:
     """Pump frames from a websockets connection into a Session until it closes."""
 
     async def send(msg: Dict[str, Any]) -> None:
         await ws.send(encode_message(msg))
 
-    session = Session(runner, send, name=name)
+    if session is None:
+        session = Session(runner, send, name=name)
+    else:
+        session._send = send
     async for frame in ws:
         await session.handle(frame)
     return session
@@ -383,15 +389,32 @@ class RelayClient:
         self.attempts = 0
         self.connected = asyncio.Event()
         self._stop = asyncio.Event()
+        self._paired_at = 0.0
+        self._session: Optional[Session] = None
 
     async def do_pair(self) -> Pairing:
         self.pairing = await asyncio.to_thread(self._pair_fn)
+        self._paired_at = time.monotonic()
+        self._session = None
         if self.on_paired:
             self.on_paired(self.pairing)
         return self.pairing
 
     def stop(self) -> None:
         self._stop.set()
+
+    async def _expire_unused(self, ws) -> None:
+        """The relay forgets a code nobody joined after ``expires_in``: get a new one shortly before that,
+        so the code shown to the user always works."""
+        p = self.pairing
+        if p is None:
+            return
+        left = p.expires_in - 20 - (time.monotonic() - self._paired_at)
+        await asyncio.sleep(max(0.0, left))
+        if self.pairing is p and not (self._session and self._session.joined):
+            log.info("code %s unused for %d s: pairing again", p.pretty, p.expires_in - 20)
+            self.pairing = None
+            await ws.close()
 
     async def run(self) -> None:
         from websockets.asyncio.client import connect
@@ -418,8 +441,16 @@ class RelayClient:
                     backoff = self.min_backoff
                     self.connected.set()
                     log.info("relay connected (session %s, code %s)", self.pairing.session, self.pairing.pretty)
-                    await run_session_over_ws(ws, self.runner, "relay")
+                    if self._session is None:
+                        self._session = Session(self.runner, lambda m: None, name="relay")
+                    expired = asyncio.create_task(self._expire_unused(ws))
+                    try:
+                        await run_session_over_ws(ws, self.runner, "relay", self._session)
+                    finally:
+                        expired.cancel()
                     log.info("relay connection closed")
+                    if self.pairing is None:     # the code expired unused: pair again at once (new code)
+                        continue
             except InvalidStatus as e:
                 code = getattr(getattr(e, "response", None), "status_code", None)
                 log.warning("relay rejected connection (HTTP %s)", code)
