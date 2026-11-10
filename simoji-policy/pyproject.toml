@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "simoji-policy"
+version = "0.1.0"
+description = "Serve a robot policy (LeRobot, openpi, OpenVLA, GR00T or your own Python file) to the Simoji iPhone simulator over the Simoji Remote Policy protocol."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+authors = [{ name = "Simoji" }]
+keywords = ["robotics", "simulation", "vla", "policy", "lerobot", "openvla"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+  "websockets>=12",
+  "numpy",
+  "pillow",
+  "qrcode",
+  "requests",
+]
+
+[project.optional-dependencies]
+openpi = ["msgpack"]
+openvla = ["torch", "transformers>=4.40", "timm", "tokenizers"]
+dev = ["pytest", "pytest-asyncio"]
+
+[project.scripts]
+simoji-policy = "simoji_policy.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/robotsimguy/simoji-brain"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-p no:dash"
+testpaths = ["tests"]
