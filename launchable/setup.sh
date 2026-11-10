@@ -66,7 +66,7 @@ PY="$ROOT/Isaac-GR00T/.venv/bin/python"
 # 3. Model weights (public, no token). The gated Cosmos-Reason2 backbone comes from Simoji's
 #    redistributed copy (NVIDIA Open Model License); see the repo README.
 status "downloading the model (step 3 of 3, about 10 GB)…"
-"$PY" "$ROOT/brain/launchable/fetch_models.py" --model "$MODEL"
+"$PY" "$ROOT/brain/launchable/fetch_models.py" --model "$MODEL" --link-dir "$ROOT/Isaac-GR00T"
 
 sudo tee /etc/systemd/system/simoji-groot.service >/dev/null <<EOF
 [Unit]

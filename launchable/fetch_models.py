@@ -16,8 +16,12 @@ from huggingface_hub import snapshot_download
 MIRRORS = {"nvidia/Cosmos-Reason2-2B": os.environ.get("SIMOJI_COSMOS_REASON_MIRROR", "Simoji/Cosmos-Reason2-2B")}
 
 
-def put_in_cache(upstream: str, mirror: str) -> None:
-    """Download mirror and expose it in the HF cache as upstream (refs/main -> same snapshot)."""
+def put_in_cache(upstream: str, mirror: str, link_dir: str | None = None) -> None:
+    """Download mirror and expose it in the HF cache as upstream (refs/main -> same snapshot).
+
+    Also links <link_dir>/<upstream> -> the snapshot: GR00T passes the id to transformers' from_pretrained, which
+    treats an existing directory of that (relative) name as a local model and makes no Hub calls. Without it,
+    transformers 4.57 asks the Hub about the upstream id even when the files are cached (fails offline)."""
     from huggingface_hub.constants import HF_HUB_CACHE
 
     src = snapshot_download(mirror)
@@ -30,15 +34,23 @@ def put_in_cache(upstream: str, mirror: str) -> None:
         os.symlink(src, link)
     with open(os.path.join(repo_dir, "refs", "main"), "w") as f:
         f.write(rev)
+    if link_dir:
+        dst = os.path.join(link_dir, upstream)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        if os.path.islink(dst):
+            os.remove(dst)
+        if not os.path.exists(dst):
+            os.symlink(src, dst)
     print(f"{upstream}: from {mirror} ({rev[:8]})", flush=True)
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True)
+    ap.add_argument("--link-dir", default=None, help="the model server's working directory")
     a = ap.parse_args()
     for upstream, mirror in MIRRORS.items():
-        put_in_cache(upstream, mirror)
+        put_in_cache(upstream, mirror, a.link_dir)
     print(a.model, snapshot_download(a.model), flush=True)
 
 
