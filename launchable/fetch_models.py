@@ -13,7 +13,7 @@ import os
 from huggingface_hub import snapshot_download
 
 # Gated upstream id -> public Simoji copy (same files, plus the NVIDIA licence and NOTICE).
-MIRRORS = {"nvidia/Cosmos-Reason2-2B": os.environ.get("SIMOJI_COSMOS_REASON_MIRROR", "simoji/Cosmos-Reason2-2B")}
+MIRRORS = {"nvidia/Cosmos-Reason2-2B": os.environ.get("SIMOJI_COSMOS_REASON_MIRROR", "Simoji/Cosmos-Reason2-2B")}
 
 
 def put_in_cache(upstream: str, mirror: str) -> None:
