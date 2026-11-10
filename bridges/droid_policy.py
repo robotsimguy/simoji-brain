@@ -58,13 +58,13 @@ def _resize_pad(img: np.ndarray, h: int, w: int) -> np.ndarray:
     return out
 
 
-# Franka Panda forward kinematics (modified DH, Craig convention; Franka's published parameters), link0 -> hand TCP.
+# Franka Panda forward kinematics (modified DH, Craig convention; Franka's published parameters), link0 -> flange.
 _PANDA_DH = [  # (a, d, alpha) per joint
     (0.0, 0.333, 0.0), (0.0, 0.0, -np.pi / 2), (0.0, 0.316, np.pi / 2), (0.0825, 0.0, np.pi / 2),
     (-0.0825, 0.384, -np.pi / 2), (0.0, 0.0, np.pi / 2), (0.088, 0.0, np.pi / 2),
 ]
-_FLANGE_D = 0.107          # link7 -> flange (link8)
-_HAND_TCP_D = 0.1034       # flange -> between the fingertips; the hand is mounted at -45 deg about z
+_FLANGE_D = 0.107          # link7 -> flange (link8). DROID's cartesian_position is exactly this frame: checked against
+                           # GR00T's demo_data/droid_sample (844 frames, 0 mm / 0 deg error), no hand / TCP offset.
 # GR00T N1.7 DROID: euler(robot) -> matrix, then this egocentric correction, then the first two rows (rot6d).
 # Same matrix as Isaac-GR00T gr00t/data/state_action/droid_frame.py (DROID_EEF_ROTATION_CORRECT).
 _DROID_EEF_ROTATION_CORRECT = np.array([[0, 0, -1], [-1, 0, 0], [0, 1, 0]], np.float64)
@@ -76,12 +76,11 @@ def _mdh(a, d, alpha, theta):
 
 
 def panda_fk(q7: np.ndarray) -> np.ndarray:
-    """4x4 pose of the Panda hand TCP in the robot base (link0) frame."""
+    """4x4 pose of the Panda flange (link8) in the robot base (link0) frame = DROID's cartesian_position."""
     T = np.eye(4)
     for (a, d, al), th in zip(_PANDA_DH, q7):
         T = T @ _mdh(a, d, al, float(th))
-    T = T @ _mdh(0.0, _FLANGE_D, 0.0, 0.0) @ _mdh(0.0, _HAND_TCP_D, 0.0, -np.pi / 4)
-    return T
+    return T @ _mdh(0.0, _FLANGE_D, 0.0, 0.0)
 
 
 def droid_eef_9d(q7: np.ndarray) -> np.ndarray:
