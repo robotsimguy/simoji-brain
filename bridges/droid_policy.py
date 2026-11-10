@@ -1,4 +1,4 @@
-"""DROID-style Franka bridge: Simoji's Franka Panda <-> openpi pi0.5-DROID, Cosmos3-*-Policy-DROID or GR00T N1.6-DROID.
+"""DROID-style Franka bridge: Simoji's Franka Panda <-> openpi pi0.5-DROID, Cosmos3-*-Policy-DROID or GR00T N1.6/N1.7-DROID.
 
 Run on the GPU box next to the model's own server (see docs/remote-vla-on-brev.md):
 
@@ -23,7 +23,8 @@ Mapping (Simoji Franka Panda from the robot catalogue, 9 joints: panda_joint1..7
 * actions -> Simoji ``joint_targets`` for all 9 joints (fingers = 0.04 * (1 - gripper)).
   pi05_droid outputs joint velocities v in [-1, 1] at 15 Hz; DROID's controller turns them into a per-step joint
   delta of v * 0.2 rad (droid/robot_ik/robot_ik_solver.py), so targets = q + cumsum(v * 0.2 * vel_scale).
-  Cosmos3 / GR00T N1.6 output absolute joint positions.
+  Cosmos3 / GR00T N1.6 / N1.7 output absolute joint positions (N1.7 predicts them relative to the state and its
+  server returns them absolute). N1.7 also needs the hand pose (eef_9d), computed here with Panda forward kinematics.
 
 Timing of every model call is appended as JSON lines to ``--extra log=/path`` (default /tmp/droid_policy_timing.jsonl).
 """
@@ -57,6 +58,42 @@ def _resize_pad(img: np.ndarray, h: int, w: int) -> np.ndarray:
     return out
 
 
+# Franka Panda forward kinematics (modified DH, Craig convention; Franka's published parameters), link0 -> hand TCP.
+_PANDA_DH = [  # (a, d, alpha) per joint
+    (0.0, 0.333, 0.0), (0.0, 0.0, -np.pi / 2), (0.0, 0.316, np.pi / 2), (0.0825, 0.0, np.pi / 2),
+    (-0.0825, 0.384, -np.pi / 2), (0.0, 0.0, np.pi / 2), (0.088, 0.0, np.pi / 2),
+]
+_FLANGE_D = 0.107          # link7 -> flange (link8)
+_HAND_TCP_D = 0.1034       # flange -> between the fingertips; the hand is mounted at -45 deg about z
+# GR00T N1.7 DROID: euler(robot) -> matrix, then this egocentric correction, then the first two rows (rot6d).
+# Same matrix as Isaac-GR00T gr00t/data/state_action/droid_frame.py (DROID_EEF_ROTATION_CORRECT).
+_DROID_EEF_ROTATION_CORRECT = np.array([[0, 0, -1], [-1, 0, 0], [0, 1, 0]], np.float64)
+
+
+def _mdh(a, d, alpha, theta):
+    ca, sa, ct, st = np.cos(alpha), np.sin(alpha), np.cos(theta), np.sin(theta)
+    return np.array([[ct, -st, 0, a], [st * ca, ct * ca, -sa, -d * sa], [st * sa, ct * sa, ca, d * ca], [0, 0, 0, 1]])
+
+
+def panda_fk(q7: np.ndarray) -> np.ndarray:
+    """4x4 pose of the Panda hand TCP in the robot base (link0) frame."""
+    T = np.eye(4)
+    for (a, d, al), th in zip(_PANDA_DH, q7):
+        T = T @ _mdh(a, d, al, float(th))
+    T = T @ _mdh(0.0, _FLANGE_D, 0.0, 0.0) @ _mdh(0.0, _HAND_TCP_D, 0.0, -np.pi / 4)
+    return T
+
+
+def droid_eef_9d(q7: np.ndarray) -> np.ndarray:
+    """DROID cartesian_position (xyz + extrinsic xyz euler, as DROID records it) -> GR00T N1.7 eef_9d."""
+    from scipy.spatial.transform import Rotation
+
+    T = panda_fk(q7)
+    euler = Rotation.from_matrix(T[:3, :3]).as_euler("xyz")
+    rot = Rotation.from_euler("XYZ", euler).as_matrix() @ _DROID_EEF_ROTATION_CORRECT   # = GR00T compute_eef_9d
+    return np.concatenate([T[:3, 3], rot[:2, :].reshape(6)]).astype(np.float32)
+
+
 class Policy:
     name = "droid-bridge"
     action_space = "joint_targets"
@@ -85,7 +122,8 @@ class Policy:
         self.arm_idx: list[int] = []
         self.finger_idx: list[int] = []
         self.joint_names: list[str] = []
-        self.name = {"openpi": "pi05-droid", "cosmos": "cosmos3-droid", "groot": "gr00t-n1.6-droid"}.get(self.backend, self.backend)
+        self.groot_api = "n16"                               # n16: flat keys; n17: nested video/state/language
+        self.name = {"openpi": "pi05-droid", "cosmos": "cosmos3-droid", "groot": "gr00t-droid"}.get(self.backend, self.backend)
 
     # -- lifecycle ------------------------------------------------------------------------------------------
     def load(self, status):
@@ -103,6 +141,17 @@ class Policy:
 
             host, _, port = self.url.replace("tcp://", "").partition(":")
             self.client = PolicyClient(host=host or "localhost", port=int(port or 5555), timeout_ms=30000)
+            # N1.7 checkpoints declare eef_9d in their state; their requests are nested by modality.
+            try:
+                mc = self.client.get_modality_config()
+                st = mc["state"] if isinstance(mc, dict) else None
+                keys = getattr(st, "modality_keys", None) or (st or {}).get("modality_keys", [])
+                if "eef_9d" in keys:
+                    self.groot_api = "n17"
+                    self.name = "gr00t-n1.7-droid"
+            except Exception as e:  # older servers: keep the N1.6 format
+                self._log({"event": "modality_config_failed", "error": repr(e)[:200]})
+            self._log({"event": "groot_api", "api": self.groot_api})
         else:
             raise ValueError(f"unknown backend {self.backend!r}")
         # Warm up: the first call compiles (openpi/JAX ~20 s) -- longer than the phone's 15 s action timeout, and a
@@ -191,6 +240,19 @@ class Policy:
                 raise RuntimeError(f"model server error: {resp[:300]}")
             raw = np.asarray(resp.get("actions", resp.get("action")), dtype=np.float32)
             server_ms = (resp.get("server_timing") or {}).get("infer_ms") if isinstance(resp, dict) else None
+        elif self.groot_api == "n17":
+            req = {
+                "video": {"exterior_image_1_left": _resize_pad(ext1, 180, 320)[None, None],
+                          "wrist_image_left": _resize_pad(wrist, 180, 320)[None, None]},
+                "state": {"eef_9d": droid_eef_9d(jp)[None, None],
+                          "gripper_position": g.astype(np.float32)[None, None],
+                          "joint_position": jp.astype(np.float32)[None, None]},
+                "language": {"annotation.language.language_instruction": [[prompt]]},
+            }
+            resp = self.client.get_action(req)
+            a = resp[0] if isinstance(resp, (tuple, list)) else resp
+            raw = np.concatenate([np.asarray(a["joint_position"])[0], np.asarray(a["gripper_position"])[0]], axis=1).astype(np.float32)
+            server_ms = None
         else:
             req = {
                 "video.exterior_image_1_left": _resize_pad(ext1, 180, 320)[None, None],

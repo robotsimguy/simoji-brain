@@ -48,7 +48,7 @@ sudo chmod 440 /etc/sudoers.d/simoji-shutdown
 
 # 2. GR00T + the connector in one environment (uv). GR00T needs git-lfs (its wheels) and FFmpeg 4-7 (torchcodec).
 status "installing system packages (step 2 of 3)…"
-sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git-lfs ffmpeg >/dev/null
+sudo apt-get -o DPkg::Lock::Timeout=900 update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=900 install -y -qq git-lfs ffmpeg >/dev/null
 git lfs install --skip-repo >/dev/null
 if ! command -v uv >/dev/null; then curl -LsSf https://astral.sh/uv/install.sh | sh; fi
 export PATH="$HOME/.local/bin:$PATH"
