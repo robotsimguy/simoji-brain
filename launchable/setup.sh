@@ -11,7 +11,7 @@ set -euo pipefail
 REPO_URL="${SIMOJI_BRAIN_REPO:-https://github.com/robotsimguy/simoji-brain}"
 REPO_REF="${SIMOJI_BRAIN_REF:-main}"
 GROOT_URL="https://github.com/NVIDIA/Isaac-GR00T"
-GROOT_REF="${SIMOJI_GROOT_REF:-main}"
+GROOT_REF="${SIMOJI_GROOT_REF:-7aa0bca}"   # Isaac-GR00T main, 2026-11-07 (tested)
 MODEL="${SIMOJI_MODEL:-nvidia/GR00T-N1.7-DROID}"
 EMBODIMENT="${SIMOJI_EMBODIMENT:-OXE_DROID_RELATIVE_EEF_RELATIVE_JOINT}"
 IDLE_MIN="${SIMOJI_IDLE_MINUTES:-30}"
@@ -46,14 +46,19 @@ sudo systemctl daemon-reload && sudo systemctl enable --now simoji-page
 echo "$RUN_USER ALL=(root) NOPASSWD: /usr/sbin/shutdown" | sudo tee /etc/sudoers.d/simoji-shutdown >/dev/null
 sudo chmod 440 /etc/sudoers.d/simoji-shutdown
 
-# 2. GR00T + the connector in one environment (uv).
+# 2. GR00T + the connector in one environment (uv). GR00T needs git-lfs (its wheels) and FFmpeg 4-7 (torchcodec).
+status "installing system packages (step 2 of 3)…"
+sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git-lfs ffmpeg >/dev/null
+git lfs install --skip-repo >/dev/null
 if ! command -v uv >/dev/null; then curl -LsSf https://astral.sh/uv/install.sh | sh; fi
 export PATH="$HOME/.local/bin:$PATH"
-if [ ! -d Isaac-GR00T/.git ]; then git clone -q "$GROOT_URL" Isaac-GR00T; fi
-git -C Isaac-GR00T fetch -q origin "$GROOT_REF" && git -C Isaac-GR00T checkout -q FETCH_HEAD
+if [ ! -d Isaac-GR00T/.git ]; then GIT_LFS_SKIP_SMUDGE=1 git clone -q "$GROOT_URL" Isaac-GR00T; fi
 cd Isaac-GR00T
+GIT_LFS_SKIP_SMUDGE=1 git fetch -q origin && GIT_LFS_SKIP_SMUDGE=1 git checkout -q "$GROOT_REF"
+git submodule update --init --recursive -q
+git lfs pull --include "scripts/deployment/*/wheels/*.whl"
 status "installing NVIDIA GR00T (step 2 of 3, a few minutes)…"
-uv sync -q
+uv sync -q --python 3.12
 uv pip install -q -e . -e "$ROOT/brain/simoji-policy"
 uv pip uninstall -q deepspeed 2>/dev/null || true   # imports need a CUDA toolkit we don't use for inference
 PY="$ROOT/Isaac-GR00T/.venv/bin/python"
